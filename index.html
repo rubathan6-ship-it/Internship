@@ -3,28 +3,230 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Document Viewer</title>
+    <title>Verify Certificate | Document Verification</title>
+    <meta
+      name="description"
+      content="Verify your certificate by entering your Student ID."
+    />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="viewer-shell">
-      <object
-        class="pdf-viewer"
-        data="./NSWKA0126005.pdf#view=FitH&toolbar=1&navpanes=0"
-        type="application/pdf"
-        aria-label="PDF document"
-      >
-        <iframe
-          class="pdf-viewer"
-          src="./NSWKA0126005.pdf#view=FitH&toolbar=1&navpanes=0"
-          title="PDF document"
-        >
-          <p>
-            Your browser cannot display the PDF.
-            <a href="./NSWKA0126005.pdf" target="_blank" rel="noopener">Open the PDF</a>.
-          </p>
-        </iframe>
-      </object>
+    <header class="site-header">
+      <div class="container header-inner">
+        <a class="brand" href="/">Document Verification</a>
+        <span class="header-tag">Secure Access</span>
+      </div>
+    </header>
+
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <div class="container">
+        <a href="/">Home</a>
+        <span aria-hidden="true">›</span>
+        <span>Verify Certificate</span>
+      </div>
+    </nav>
+
+    <main class="container main-content">
+      <section id="verifyCard" class="card verify-card">
+        <div class="card-icon" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            width="36"
+            height="36"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M22 10 12 5 2 10l10 5 10-5Z"></path>
+            <path d="M6 12v5c0 1.1 2.7 3 6 3s6-1.9 6-3v-5"></path>
+            <path d="M22 10v6"></path>
+          </svg>
+        </div>
+        <h1>Verify Certificate</h1>
+        <p class="subtitle">Enter your Student ID below to verify your certificate.</p>
+
+        <form id="verifyForm" novalidate>
+          <label for="studentId">Student ID <span class="required">*</span></label>
+          <input
+            id="studentId"
+            name="id"
+            type="text"
+            placeholder="Enter Student ID"
+            autocomplete="off"
+            spellcheck="false"
+            required
+          />
+          <p id="errorMessage" class="error-message" role="alert" hidden></p>
+          <button id="submitButton" type="submit" class="primary-button">
+            Verify Now <span aria-hidden="true">→</span>
+          </button>
+        </form>
+
+        <p class="support-note">For support, contact your administrator.</p>
+      </section>
+
+      <section id="viewerCard" class="card viewer-card" hidden>
+        <div class="viewer-header">
+          <div>
+            <h1>Certificate Verified</h1>
+            <p class="subtitle">Your document is ready below.</p>
+          </div>
+          <button id="signOutButton" type="button" class="secondary-button">
+            Sign out
+          </button>
+        </div>
+
+        <div class="viewer-shell">
+          <object
+            id="pdfObject"
+            class="pdf-viewer"
+            data="about:blank"
+            type="application/pdf"
+            aria-label="Verified PDF document"
+          >
+            <iframe
+              id="pdfFrame"
+              class="pdf-viewer"
+              src="about:blank"
+              title="Verified PDF document"
+            >
+              <p>
+                Your browser cannot display the PDF.
+                <a href="/document" target="_blank" rel="noopener">Open the PDF</a>.
+              </p>
+            </iframe>
+          </object>
+        </div>
+      </section>
     </main>
+
+    <footer class="site-footer">
+      <div class="container">
+        © <span id="year"></span> Document Verification. All rights reserved.
+      </div>
+    </footer>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <script>
+      const PDF_URL = "/document#view=FitH&toolbar=1&navpanes=0";
+      const verifyCard = document.getElementById("verifyCard");
+      const viewerCard = document.getElementById("viewerCard");
+      const verifyForm = document.getElementById("verifyForm");
+      const studentId = document.getElementById("studentId");
+      const submitButton = document.getElementById("submitButton");
+      const errorMessage = document.getElementById("errorMessage");
+      const signOutButton = document.getElementById("signOutButton");
+      const pdfObject = document.getElementById("pdfObject");
+      const pdfFrame = document.getElementById("pdfFrame");
+      const toast = document.getElementById("toast");
+      const originalButtonHtml = submitButton.innerHTML;
+      let toastTimer;
+
+      function showToast(message, type) {
+        toast.textContent = message;
+        toast.className = `toast ${type || "info"}`;
+        toast.hidden = false;
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          toast.hidden = true;
+        }, 4000);
+      }
+
+      function showError(message) {
+        errorMessage.textContent = message;
+        errorMessage.hidden = false;
+      }
+
+      function clearError() {
+        errorMessage.textContent = "";
+        errorMessage.hidden = true;
+      }
+
+      function setPdfSource(url) {
+        pdfObject.data = url;
+        pdfFrame.src = url;
+      }
+
+      function showViewer() {
+        verifyCard.hidden = true;
+        viewerCard.hidden = false;
+        if (pdfObject.data !== PDF_URL) setPdfSource(PDF_URL);
+      }
+
+      function showVerifyCard() {
+        viewerCard.hidden = true;
+        verifyCard.hidden = false;
+        setPdfSource("about:blank");
+        studentId.value = "";
+        clearError();
+      }
+
+      async function checkSession() {
+        try {
+          const response = await fetch("/api/session", { cache: "no-store" });
+          const data = await response.json();
+          if (data.authenticated) showViewer();
+        } catch {
+          showVerifyCard();
+        }
+      }
+
+      verifyForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        clearError();
+        const id = studentId.value;
+        if (!id) {
+          showError("Student ID is required.");
+          return;
+        }
+
+        submitButton.disabled = true;
+        submitButton.textContent = "Verifying...";
+
+        try {
+          const response = await fetch("/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ id }).toString(),
+            cache: "no-store",
+          });
+          const data = await response.json();
+
+          if (data.ok) {
+            showViewer();
+            showToast("Certificate verified.", "success");
+          } else {
+            const message = data.error || "Invalid Student ID.";
+            showError(message);
+            showToast(message, "error");
+          }
+        } catch {
+          showError("Unable to verify. Please try again.");
+          showToast("Unable to verify. Please try again.", "error");
+        } finally {
+          submitButton.disabled = false;
+          submitButton.innerHTML = originalButtonHtml;
+        }
+      });
+
+      signOutButton.addEventListener("click", async () => {
+        signOutButton.disabled = true;
+        try {
+          await fetch("/logout", { method: "POST", cache: "no-store" });
+          showVerifyCard();
+          showToast("Signed out.", "info");
+        } catch {
+          showToast("Unable to sign out. Please try again.", "error");
+        } finally {
+          signOutButton.disabled = false;
+        }
+      });
+
+      document.getElementById("year").textContent = new Date().getFullYear();
+      checkSession();
+    </script>
   </body>
 </html>
