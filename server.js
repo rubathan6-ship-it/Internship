@@ -12,10 +12,26 @@ const SESSION_COOKIE = "verify_session";
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILURES = 5;
-const PORT = Number(process.env.PORT) || 3000;
+const BASE_PORT = Number(process.env.PORT) || 3000;
+const PDF_SRC = "/document#view=FitH&amp;toolbar=1&amp;navpanes=0";
+const ERROR_MESSAGES = {
+  invalid: "Invalid Student ID.",
+  required: "Student ID is required.",
+  rate: "Too many attempts. Please try again later.",
+};
 
 const sessions = new Map();
 const failures = new Map();
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[char]);
+}
 
 function parseCookies(header) {
   const result = {};
@@ -131,20 +147,53 @@ function send(res, statusCode, body, headers = {}) {
   res.end(payload);
 }
 
+function sendHtml(res, html) {
+  send(res, 200, html, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+}
+
 function sendJson(res, statusCode, payload) {
   send(res, statusCode, JSON.stringify(payload), {
     "Content-Type": "application/json; charset=utf-8",
   });
 }
 
-function sendTextFile(res, filePath) {
-  fs.readFile(filePath, (error, data) => {
-    if (error) return send(res, 404, "Not found");
-    const contentType = filePath.endsWith(".css")
-      ? "text/css; charset=utf-8"
-      : "text/html; charset=utf-8";
-    send(res, 200, data, { "Content-Type": contentType, "Cache-Control": "no-cache" });
+function redirect(res, location, headers = {}) {
+  res.writeHead(303, {
+    Location: location,
+    "Cache-Control": "no-store",
+    ...headers,
   });
+  res.end();
+}
+
+function renderPage(authenticated, errorCode) {
+  let html = fs.readFileSync(INDEX_PATH, "utf8");
+
+  if (authenticated) {
+    html = html.replace(
+      '<section id="verifyCard" class="card verify-card">',
+      '<section id="verifyCard" class="card verify-card" hidden>'
+    );
+    html = html.replace(
+      '<section id="viewerCard" class="card viewer-card" hidden>',
+      '<section id="viewerCard" class="card viewer-card">'
+    );
+    html = html.replace('data="about:blank"', `data="${PDF_SRC}"`);
+    html = html.replace('src="about:blank"', `src="${PDF_SRC}"`);
+  }
+
+  const message = ERROR_MESSAGES[errorCode];
+  if (message && !authenticated) {
+    html = html.replace(
+      '<p id="errorMessage" class="error-message" role="alert" hidden></p>',
+      `<p id="errorMessage" class="error-message" role="alert">${escapeHtml(message)}</p>`
+    );
+  }
+
+  return html;
 }
 
 function servePdf(req, res) {
@@ -206,11 +255,18 @@ const server = http.createServer(async (req, res) => {
     const secure = isSecureRequest(req);
 
     if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
-      return sendTextFile(res, INDEX_PATH);
+      return sendHtml(res, renderPage(Boolean(session), url.searchParams.get("error")));
     }
 
     if (req.method === "GET" && pathname === "/styles.css") {
-      return sendTextFile(res, STYLE_PATH);
+      fs.readFile(STYLE_PATH, (error, data) => {
+        if (error) return send(res, 404, "Not found");
+        send(res, 200, data, {
+          "Content-Type": "text/css; charset=utf-8",
+          "Cache-Control": "no-cache",
+        });
+      });
+      return;
     }
 
     if (req.method === "GET" && pathname === "/favicon.ico") {
@@ -223,30 +279,27 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && pathname === "/login") {
-      if (isRateLimited(req)) {
-        return sendJson(res, 429, {
-          ok: false,
-          error: "Too many attempts. Please try again later.",
-        });
-      }
+      if (isRateLimited(req)) return redirect(res, "/?error=rate");
 
       const params = await readBody(req);
-      if (params.get("id") === VALID_ID) {
+      const id = params.get("id") || "";
+
+      if (!id) return redirect(res, "/?error=required");
+
+      if (id === VALID_ID) {
         clearFailures(req);
         const token = crypto.randomBytes(32).toString("hex");
         sessions.set(token, { expiresAt: Date.now() + SESSION_MS });
-        res.setHeader("Set-Cookie", sessionCookie(token, secure));
-        return sendJson(res, 200, { ok: true });
+        return redirect(res, "/", { "Set-Cookie": sessionCookie(token, secure) });
       }
 
       recordFailure(req);
-      return sendJson(res, 401, { ok: false, error: "Invalid Student ID." });
+      return redirect(res, "/?error=invalid");
     }
 
     if (req.method === "POST" && pathname === "/logout") {
       if (session) sessions.delete(session.token);
-      res.setHeader("Set-Cookie", clearedCookie(SESSION_COOKIE, secure));
-      return sendJson(res, 200, { ok: true });
+      return redirect(res, "/", { "Set-Cookie": clearedCookie(SESSION_COOKIE, secure) });
     }
 
     if ((req.method === "GET" || req.method === "HEAD") && pathname === "/document") {
@@ -272,6 +325,23 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Document Verification running at http://localhost:${PORT}`);
+let activePort = BASE_PORT;
+
+function start(port) {
+  activePort = port;
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`Document Verification running at http://localhost:${activePort}`);
+  });
+}
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE" && activePort < BASE_PORT + 10) {
+    console.log(`Port ${activePort} is busy, trying ${activePort + 1}...`);
+    setTimeout(() => start(activePort + 1), 150);
+    return;
+  }
+  console.error(error);
+  process.exit(1);
 });
+
+start(BASE_PORT);
